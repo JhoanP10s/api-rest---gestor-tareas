@@ -7,11 +7,16 @@ import com.example.taskmanager.entity.Task;
 import com.example.taskmanager.entity.TaskPriority;
 import com.example.taskmanager.entity.TaskStatus;
 import com.example.taskmanager.exception.TaskNotFoundException;
+import com.example.taskmanager.exception.InvalidStateTransitionException;
 import com.example.taskmanager.repository.TaskRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.EnumSet;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 @Transactional
@@ -19,6 +24,14 @@ public class TaskServiceImpl implements TaskService {
 
     private final TaskRepository taskRepository;
     private final TaskMapper taskMapper;
+
+    // Valid state transitions: currentStatus -> Set of allowed next statuses
+    private static final Map<TaskStatus, Set<TaskStatus>> VALID_TRANSITIONS = Map.of(
+            TaskStatus.PENDING, EnumSet.of(TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.CANCELLED),
+            TaskStatus.IN_PROGRESS, EnumSet.of(TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.PENDING),
+            TaskStatus.COMPLETED, EnumSet.of(TaskStatus.IN_PROGRESS),
+            TaskStatus.CANCELLED, EnumSet.of(TaskStatus.PENDING)
+    );
 
     public TaskServiceImpl(TaskRepository taskRepository, TaskMapper taskMapper) {
         this.taskRepository = taskRepository;
@@ -80,6 +93,12 @@ public class TaskServiceImpl implements TaskService {
         Task existingTask = taskRepository.findById(id)
                 .orElseThrow(() -> new TaskNotFoundException(id));
 
+        // Validate status transition if status is being changed
+        TaskStatus newStatus = requestDTO.getStatus();
+        if (newStatus != null && !newStatus.equals(existingTask.getStatus())) {
+            validateTransition(existingTask.getStatus(), newStatus);
+        }
+
         taskMapper.updateEntityFromDTO(requestDTO, existingTask);
         Task updatedTask = taskRepository.save(existingTask);
         return taskMapper.toResponseDTO(updatedTask);
@@ -89,6 +108,8 @@ public class TaskServiceImpl implements TaskService {
     public TaskResponseDTO updateStatus(Long id, TaskStatus status) {
         Task existingTask = taskRepository.findById(id)
                 .orElseThrow(() -> new TaskNotFoundException(id));
+
+        validateTransition(existingTask.getStatus(), status);
 
         existingTask.setStatus(status);
         Task updatedTask = taskRepository.save(existingTask);
@@ -113,5 +134,12 @@ public class TaskServiceImpl implements TaskService {
     @Transactional(readOnly = true)
     public long countByPriority(TaskPriority priority) {
         return taskRepository.countByPriority(priority);
+    }
+
+    private void validateTransition(TaskStatus currentStatus, TaskStatus newStatus) {
+        Set<TaskStatus> allowedTransitions = VALID_TRANSITIONS.get(currentStatus);
+        if (allowedTransitions == null || !allowedTransitions.contains(newStatus)) {
+            throw new InvalidStateTransitionException(currentStatus, newStatus);
+        }
     }
 }
